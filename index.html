@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>からだのなまえタッチ</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #f0f8ff;
+            font-family: "Hiragino Kaku Gothic ProN", sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #container {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            aspect-ratio: 4/3;
+            background: #000;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+
+        video, canvas {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); 
+            object-fit: cover;
+        }
+
+        #start-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255, 255, 255, 0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            text-align: center;
+        }
+
+        button {
+            padding: 20px 40px;
+            font-size: 24px;
+            background-color: #ff9800;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 5px 0 #e65100;
+        }
+
+        #status {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(255,255,255,0.8);
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            z-index: 10;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="container">
+        <video id="input_video" playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="status">カメラのじゅんび中...</div>
+
+        <div id="start-overlay">
+            <h1>からだのなまえ タッチ</h1>
+            <p>カメラをつかってあそびます。<br>おとがなります。</p>
+            <button id="start-btn">スタート！</button>
+        </div>
+    </div>
+
+    <audio id="snd-hair" src="1.mp3" preload="auto"></audio>
+    <audio id="snd-ear" src="2.mp3" preload="auto"></audio>
+    <audio id="snd-nose" src="3.mp3" preload="auto"></audio>
+    <audio id="snd-mouth" src="4.mp3" preload="auto"></audio>
+    <audio id="snd-chime" src="chime.mp3" preload="auto"></audio>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const statusDiv = document.getElementById('status');
+        const startBtn = document.getElementById('start-btn');
+        const overlay = document.getElementById('start-overlay');
+
+        const sounds = {
+            hair: document.getElementById('snd-hair'),
+            ear: document.getElementById('snd-ear'),
+            nose: document.getElementById('snd-nose'),
+            mouth: document.getElementById('snd-mouth'),
+            chime: document.getElementById('snd-chime')
+        };
+
+        let isAudioEnabled = false;
+        let lastTriggerTime = 0;
+        let speechTimeout = null; // 予約された音声を管理
+        let lastDetectedPart = null; // 直前に触れた部位を記録
+        const COOLDOWN_MS = 1000; // 同じ部位の連打防止
+
+        startBtn.addEventListener('click', () => {
+            overlay.style.display = 'none';
+            statusDiv.style.display = 'block';
+            isAudioEnabled = true;
+            
+            // 全ての音声を初期化
+            Object.values(sounds).forEach(audio => {
+                audio.play().then(() => {
+                    audio.pause();
+                    audio.currentTime = 0;
+                }).catch(e => console.log('Wait for files...'));
+            });
+
+            startCamera();
+        });
+
+        // すべての音を即座に止める関数
+        function stopAllSounds() {
+            if (speechTimeout) {
+                clearTimeout(speechTimeout); // 予約されていた「部位名」の再生をキャンセル
+            }
+            Object.values(sounds).forEach(audio => {
+                if (audio) {
+                    audio.pause();
+                    audio.currentTime = 0;
+                }
+            });
+        }
+
+        function playSound(partName) {
+            const now = Date.now();
+            
+            // 同じ部位を連続で触った場合は、一定時間空ける（チャタリング防止）
+            if (partName === lastDetectedPart && (now - lastTriggerTime < COOLDOWN_MS)) {
+                return;
+            }
+
+            if (isAudioEnabled) {
+                // 1. まず現在の音を全部止める
+                stopAllSounds();
+
+                // 2. ピンポーンを鳴らす
+                if(sounds.chime) {
+                    sounds.chime.play().catch(e => console.log(e));
+                }
+
+                // 3. 0.6秒後に部位の名前を鳴らす予約を入れる
+                speechTimeout = setTimeout(() => {
+                    const targetSound = sounds[partName];
+                    if (targetSound) {
+                        targetSound.play().catch(e => console.log(e));
+                    }
+                }, 600);
+            }
+            
+            lastTriggerTime = now;
+            lastDetectedPart = partName;
+            statusDiv.innerText = getJapaneseName(partName) + "！";
+            statusDiv.style.backgroundColor = "#ffeb3b";
+            
+            setTimeout(() => {
+                statusDiv.innerText = "タッチしてみよう";
+                statusDiv.style.backgroundColor = "rgba(255,255,255,0.8)";
+            }, 2000);
+        }
+
+        function getJapaneseName(key) {
+            const names = {hair:'かみのけ', ear:'みみ', nose:'はな', mouth:'くち'};
+            return names[key] || '';
+        }
+
+        const holistic = new Holistic({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+        }});
+
+        holistic.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+            refineFaceLandmarks: true
+        });
+
+        holistic.onResults(onResults);
+
+        function startCamera() {
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await holistic.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+            camera.start();
+        }
+
+        function onResults(results) {
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.leftHandLandmarks) {
+                drawHandEffects(results.leftHandLandmarks, results.faceLandmarks);
+            }
+            if (results.rightHandLandmarks) {
+                drawHandEffects(results.rightHandLandmarks, results.faceLandmarks);
+            }
+            canvasCtx.restore();
+        }
+
+        function drawHandEffects(handLandmarks, faceLandmarks) {
+            if (!handLandmarks || !faceLandmarks) return;
+            const fingerTip = handLandmarks[8];
+            
+            // 各部位の座標
+            const nose = faceLandmarks[1];
+            const mouth = faceLandmarks[13];
+            const leftEar = faceLandmarks[234];
+            const rightEar = faceLandmarks[454];
+            const forehead = faceLandmarks[10];
+
+            const threshold = 0.05;
+            const getDist = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+
+            // 判定処理
+            if (getDist(fingerTip, nose) < threshold) {
+                highlightPoint(nose, '#FF0000');
+                playSound('nose');
+            } else if (getDist(fingerTip, mouth) < threshold) {
+                highlightPoint(mouth, '#FF00FF');
+                playSound('mouth');
+            } else if (getDist(fingerTip, leftEar) < threshold || getDist(fingerTip, rightEar) < threshold) {
+                const targetEar = getDist(fingerTip, leftEar) < threshold ? leftEar : rightEar;
+                highlightPoint(targetEar, '#00FFFF');
+                playSound('ear');
+            } else {
+                const hairPoint = { x: forehead.x, y: forehead.y - 0.05 }; 
+                if (getDist(fingerTip, hairPoint) < 0.08) {
+                    highlightPoint(hairPoint, '#FFFF00');
+                    playSound('hair');
+                }
+            }
+        }
+
+        function highlightPoint(landmark, color) {
+            const x = landmark.x * canvasElement.width;
+            const y = landmark.y * canvasElement.height;
+            canvasCtx.beginPath();
+            canvasCtx.arc(x, y, 40, 0, 2 * Math.PI);
+            canvasCtx.fillStyle = color + "88"; // 透明度を追加
+            canvasCtx.fill();
+            canvasCtx.strokeStyle = 'white';
+            canvasCtx.lineWidth = 5;
+            canvasCtx.stroke();
+        }
+    </script>
+</body>
+</html>
